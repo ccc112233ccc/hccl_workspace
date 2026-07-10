@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>POD128 AllToAll 性能对比</title>
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --ink:#172033; --muted:#667085; --line:#d9dee8; --blue:#1457d9; --green:#117a46; --red:#a33b27; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+main { max-width:1120px; margin:0 auto; padding:32px 28px 48px; }
+h1 { margin:0 0 8px; font-size:28px; line-height:1.2; }
+h2 { margin:28px 0 12px; font-size:19px; }
+p { margin:8px 0; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin-top:16px; }
+.grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; }
+.metric { background:#f9fafb; border:1px solid var(--line); border-radius:8px; padding:14px; }
+.metric .label { color:var(--muted); font-size:12px; }
+.metric .value { font-size:24px; font-weight:700; margin-top:4px; color:var(--green); }
+table { border-collapse:collapse; width:100%; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+th,td { border-bottom:1px solid var(--line); padding:10px 12px; text-align:left; vertical-align:top; }
+th { background:#eef2f7; font-weight:650; }
+tr:last-child td { border-bottom:0; }
+.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+a { color:var(--blue); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.note { color:var(--muted); }
+ul { margin:8px 0 0 18px; padding:0; }
+li { margin:4px 0; }
+code { background:#eef2f7; border-radius:4px; padding:1px 5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>POD128 AllToAll 性能对比</h1>
+  <p class="note">带宽口径统一为：单 rank 发送总数据量 / 全局最后完成时间。baseline 已确认开启 RTP multipath / packet spray；MeshClos 使用固定平面 strict planestep 流量模型。</p>
+
+  <section class="card">
+    <h2>结论</h2>
+    <div class="grid">
+      <div class="metric"><div class="label">1024MiB/rank 固定平面</div><div class="value">258.32 GB/s</div></div>
+      <div class="metric"><div class="label">1024MiB/rank baseline</div><div class="value">171.70 GB/s</div></div>
+      <div class="metric"><div class="label">固定平面提升</div><div class="value">+50.4%</div></div>
+    </div>
+    <p>在 POD128 拓扑上，MeshClos 固定平面算法从 64MiB/rank 起进入约 256-266GB/s 平台；baseline 包喷洒在 64MiB/rank 后主要落在 170-196GB/s。按 1024MiB/rank 对比，固定平面比 baseline 高 <b>1.50x</b>。</p>
+  </section>
+
+  <section>
+    <h2>数据量扫描</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>数据量 / rank</th>
+          <th class="num">Baseline 全局时间 us</th>
+          <th class="num">Baseline GB/s</th>
+          <th class="num">固定平面全局时间 us</th>
+          <th class="num">固定平面 GB/s</th>
+          <th class="num">固定平面提升</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>16MiB</td><td class="num">350.442</td><td class="num">47.87</td><td class="num">70.938</td><td class="num">236.51</td><td class="num">4.94x</td></tr>
+        <tr><td>64MiB</td><td class="num">360.462</td><td class="num">186.17</td><td class="num">261.734</td><td class="num">256.40</td><td class="num">1.38x</td></tr>
+        <tr><td>128MiB</td><td class="num">684.012</td><td class="num">196.22</td><td class="num">513.426</td><td class="num">261.42</td><td class="num">1.33x</td></tr>
+        <tr><td>256MiB</td><td class="num">1418.922</td><td class="num">189.18</td><td class="num">1017.066</td><td class="num">263.93</td><td class="num">1.39x</td></tr>
+        <tr><td>512MiB</td><td class="num">2804.478</td><td class="num">191.43</td><td class="num">2021.683</td><td class="num">265.56</td><td class="num">1.39x</td></tr>
+        <tr><td>1024MiB</td><td class="num">6253.414</td><td class="num">171.70</td><td class="num">4156.671</td><td class="num">258.32</td><td class="num">1.50x</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>趋势</h2>
+    <ul>
+      <li>baseline 小包 16MiB/rank 明显受启动和同步开销影响，只有 47.87GB/s；64MiB/rank 后升到 186GB/s 左右。</li>
+      <li>baseline 128-512MiB/rank 基本在 189-196GB/s 附近波动，1024MiB/rank 下降到 171.70GB/s，说明全局长尾对最终口径有明显影响。</li>
+      <li>MeshClos 固定平面 16MiB/rank 已有 236.51GB/s，64MiB/rank 后稳定在约 256-266GB/s，说明固定平面分配减少了 baseline 中同向链路竞争造成的损失。</li>
+      <li>按 64-1024MiB/rank 的大数据量区间平均，固定平面约 261.1GB/s，baseline 约 186.9GB/s，提升约 39.7%。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>配置说明</h2>
+    <ul>
+      <li>rank 数：128；group size：8。</li>
+      <li>扫描数据量：16、64、128、256、512、1024 MiB/rank。</li>
+      <li>baseline：<code>generated_topology_pod128_hccl_baseline_threadserial_a2a128_*</code>，RTP multipath 和 packet spray 均开启。</li>
+      <li>固定平面：<code>generated_topology_pod128_hccl_meshclos2d_v3_strict_planestep_a2a128_*</code>，<code>mode=strict</code>，<code>traffic_order=v3-logical</code>，<code>dependency_mode=v3-plane-step-barrier</code>。</li>
+      <li>1024MiB/rank profile 已单独放在 <a href="../profiles/ns3ub-pod128-baseline-threadserial-a2a128-1024mb-rank0-peerthread-profile.html">baseline profile</a> 和 <a href="../profiles/ns3ub-pod128-meshclos2d-v3-strict-planestep-a2a128-1024mb-rank0-logical-profile.html">固定平面 profile</a>。</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

@@ -1,3 +1,8 @@
 runlog/
 /ns-3-ub/
 __pycache__/
+/ns-3-ub-ctp
+*/tmp/
+/experiments/pod*/alltoall/cases/*/transport_channel.csv
+!/experiments/pod*/alltoall/cases/*meshclos2d_v3*/transport_channel.csv
+/experiments/topologies/pod*/generated_topology/transport_channel.csv

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate a compact 64-NPU slice from the 8-plane 1024-NPU topology.
+"""Generate a compact N-NPU slice from the 8-plane 1024-NPU topology.
 
-The slice keeps original hosts 0..63 and all related switches/links:
+The slice keeps original hosts 0..N-1 and all related switches/links:
 
-- NPU to L1 links for original hosts 0..63.
+- NPU to L1 links for the retained original hosts.
 - Full-mesh links inside each 8-NPU group.
 - L1 to L2 links for the retained L1 switches.
 - L1 to 5808 links for the retained L1 switches.
@@ -26,7 +26,8 @@ CASE_DIR = Path(__file__).resolve().parent
 A5_ROOT = CASE_DIR
 LOCAL_SOURCE_TOPOLOGY = A5_ROOT / "generate_8plane_1024npu_topology.py"
 LEGACY_SOURCE_TOPOLOGY = A5_ROOT / "generate_8plane_1024npu_topology.py"
-HOST_COUNT = 64
+DEFAULT_HOST_COUNT = 64
+HOST_COUNT = DEFAULT_HOST_COUNT
 DEFAULT_LINK_DELAY = "1ns"
 CSV_LINE_TERMINATOR = "\n"
 
@@ -293,7 +294,7 @@ def write_transport_channel_csv(output_dir):
 
 
 def write_network_attribute(output_dir):
-    text = """default ns3::UbApp::EnableMultiPath "false"
+    text = """default ns3::UbApp::EnableMultiPath "true"
 default ns3::UbApp::UseShortestPaths "true"
 default ns3::UbLink::Delay "+0ns"
 default ns3::UbPort::UbDataRate "400Gbps"
@@ -316,7 +317,7 @@ default ns3::UbTransportChannel::RetransExponentFactor "1"
 default ns3::UbTransportChannel::DefaultMaxWqeSegNum "1000"
 default ns3::UbTransportChannel::DefaultMaxInflightPacketSize "1000"
 default ns3::UbTransportChannel::TpOooThreshold "2048"
-default ns3::UbTransportChannel::UsePacketSpray "false"
+default ns3::UbTransportChannel::UsePacketSpray "true"
 default ns3::UbTransportChannel::UseShortestPaths "true"
 default ns3::UbSwitchAllocator::AllocationTime "+10ns"
 default ns3::UbLdstInstance::ThreadNum "10"
@@ -326,7 +327,7 @@ default ns3::UbLdstThread::StoreRequestSize "512"
 default ns3::UbLdstThread::LoadRequestSize "64"
 default ns3::UbLdstThread::StoreOutstanding "64"
 default ns3::UbLdstThread::LoadOutstanding "64"
-default ns3::UbLdstApi::UsePacketSpray "false"
+default ns3::UbLdstApi::UsePacketSpray "true"
 default ns3::UbLdstApi::UseShortestPaths "true"
 default ns3::UbCaqm::UbCaqmAlpha "0.5"
 default ns3::UbCaqm::UbCaqmBeta "0.5"
@@ -356,7 +357,7 @@ global UB_RECORD_PKT_TRACE "true"
 global UB_FLOW_CONTROL_TRACE_ENABLE "false"
 global UB_CONGESTION_CONTROL_TRACE_ENABLE "false"
 
-global UB_PARSE_TRACE_ENABLE "false"
+global UB_PARSE_TRACE_ENABLE "true"
 global UB_PYTHON_SCRIPT_PATH "scratch/ns-3-ub-tools/trace_analysis/parse_trace.py"
 """
     (output_dir / "network_attribute.txt").write_text(text, encoding="utf-8")
@@ -375,7 +376,7 @@ def write_summary(output_dir, source_topo, mapping, links):
         else:
             roles["m5808"] += 1
     fullmesh_links = sum(1 for a, _ap, b, _bp, _bw, _delay in links if a < HOST_COUNT and b < HOST_COUNT)
-    text = f"""# 8-plane 64-NPU slice
+    text = f"""# 8-plane {HOST_COUNT}-NPU slice
 
 Generated from the 1024-NPU 8-plane topology script, not by manual CSV editing.
 
@@ -385,7 +386,7 @@ Source case:
 
 Slice rule:
 
-- Keep original NPU hosts `0..63`.
+- Keep original NPU hosts `0..{HOST_COUNT - 1}`.
 - Keep every switch directly related to those hosts: their L1 switches, those
   L1 switches' L2 switches, and those L1 switches' 5808 switches.
 - Keep links among retained nodes only.
@@ -417,11 +418,21 @@ Link model:
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=CASE_DIR)
+    parser.add_argument(
+        "--host-count",
+        type=int,
+        default=DEFAULT_HOST_COUNT,
+        help="Number of original hosts to keep from the 1024-NPU topology.",
+    )
     return parser.parse_args()
 
 
 def main():
+    global HOST_COUNT
     args = parse_args()
+    HOST_COUNT = args.host_count
+    if HOST_COUNT <= 0 or HOST_COUNT > 1024 or HOST_COUNT % 8 != 0:
+        raise ValueError("--host-count must be a positive multiple of 8 and no larger than 1024")
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 

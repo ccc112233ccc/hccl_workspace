@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>POD64 AllToAll 性能对比</title>
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --ink:#172033; --muted:#667085; --line:#d9dee8; --blue:#1457d9; --green:#117a46; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+main { max-width:1120px; margin:0 auto; padding:32px 28px 48px; }
+h1 { margin:0 0 8px; font-size:28px; line-height:1.2; }
+h2 { margin:28px 0 12px; font-size:19px; }
+p { margin:8px 0; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin-top:16px; }
+.grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; }
+.metric { background:#f9fafb; border:1px solid var(--line); border-radius:8px; padding:14px; }
+.metric .label { color:var(--muted); font-size:12px; }
+.metric .value { font-size:24px; font-weight:700; margin-top:4px; color:var(--green); }
+table { border-collapse:collapse; width:100%; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+th,td { border-bottom:1px solid var(--line); padding:10px 12px; text-align:left; vertical-align:top; }
+th { background:#eef2f7; font-weight:650; }
+tr:last-child td { border-bottom:0; }
+.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+a { color:var(--blue); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.note { color:var(--muted); }
+ul { margin:8px 0 0 18px; padding:0; }
+li { margin:4px 0; }
+code { background:#eef2f7; border-radius:4px; padding:1px 5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>POD64 AllToAll 性能对比</h1>
+  <p class="note">带宽口径已统一为：单rank带宽 = 单rank发送总数据量 / 全局最后完成时间。主表比较 baseline 16线程、baseline 64线程、MeshClos 固定平面 group-round sendrecv 三组。</p>
+
+  <section class="card">
+    <h2>结论</h2>
+    <div class="grid">
+      <div class="metric"><div class="label">固定平面 vs baseline 16线程</div><div class="value">+13.0%</div></div>
+      <div class="metric"><div class="label">固定平面 vs baseline 64线程</div><div class="value">+6.1%</div></div>
+      <div class="metric"><div class="label">baseline 64线程 vs baseline 16线程</div><div class="value">+6.5%</div></div>
+    </div>
+    <p>MeshClos 固定平面 group-round sendrecv 的单rank带宽为 <b>418.85 GB/s</b>，高于 baseline 16线程的 <b>370.55 GB/s</b>，也高于 baseline 64线程的 <b>394.75 GB/s</b>。</p>
+  </section>
+
+  <section>
+    <h2>主数据</h2>
+    <table>
+      <thead><tr><th>方案</th><th>流量模型</th><th class="num">单rank GB/s</th><th class="num">全局 GB/s</th><th class="num">全局时间 us</th><th>文件</th></tr></thead>
+      <tbody>
+        <tr><td>Baseline 16线程</td><td>RTP 包喷洒，16个通信线程</td><td class="num">370.55</td><td class="num">23712.00</td><td class="num">362.208</td><td><a href="../../../tmp/pod64_baseline_concurrent16_a2a64_128mb_rtp">case</a> / <a href="../profiles/ns3ub-pod64-v3-strict-threadserial-a2a64-128mb-rank0-profile.html">profile</a></td></tr><tr><td>Baseline 64线程</td><td>RTP 包喷洒，每个远端peer独立线程（实际63线程）</td><td class="num">394.75</td><td class="num">25263.71</td><td class="num">340.011</td><td><a href="../../../tmp/pod64_baseline_fulltp_concurrent63_a2a64_128mb_rtp">case</a> / <a href="../profiles/ns3ub-pod64-baseline-fulltp-concurrent63-a2a64-128mb-rank0-profile.html">profile</a></td></tr><tr><td>MeshClos 固定平面</td><td>固定平面算法，group-round sendrecv 同步模型</td><td class="num">418.85</td><td class="num">26806.21</td><td class="num">320.446</td><td><a href="../../../tmp/pod64_meshclos2d_v3_groupround_sendrecv_a2a64_128mb_rtp">case</a> / <a href="../profiles/ns3ub-pod64-v3-groupround-sendrecv-a2a64-128mb-rank0-logical-profile.html">profile</a></td></tr>
+      </tbody>
+    </table>
+    <p class="note">全局带宽 = 全部任务发送总数据量 / 全局最后完成时间。单rank带宽只用一个 rank 的发送总数据量做分子，但分母仍取全局最后完成时间。</p>
+  </section>
+
+  <section class="card">
+    <h2>补充对照</h2>
+    <ul>
+      <li>baseline phasebarrier：global 364.355 us，单rank 368.37 GB/s。</li>
+      <li>MeshClos stepbarrier：global 319.073 us，单rank 420.65 GB/s，和 group-round sendrecv 的 418.85 GB/s 基本一致。</li>
+      <li>已补跑 group-round sendrecv 的 16/64/256/512MiB 数据点，完整曲线见下表；1024MiB 仍表现为异常长尾点。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>MeshClos 固定平面随数据量变化</h2>
+    <p>group-round sendrecv 使用相同的固定平面拓扑和 phase/dependency 映射补齐了 16/64/128/256/512/1024MiB 扫描。stepbarrier 作为参考曲线放在同一张表里，用来判断趋势是否合理。</p>
+    <table>
+      <thead><tr><th>模型</th><th class="num">数据量 / rank</th><th class="num">单rank GB/s</th><th class="num">全局 GB/s</th><th class="num">全局时间 us</th></tr></thead>
+      <tbody>
+        <tr><td>group-round sendrecv</td><td class="num">16MiB</td><td class="num">309.34</td><td class="num">19797.59</td><td class="num">54.236</td></tr><tr><td>group-round sendrecv</td><td class="num">64MiB</td><td class="num">347.83</td><td class="num">22261.00</td><td class="num">192.937</td></tr><tr><td>group-round sendrecv</td><td class="num">128MiB</td><td class="num">418.85</td><td class="num">26806.21</td><td class="num">320.446</td></tr><tr><td>group-round sendrecv</td><td class="num">256MiB</td><td class="num">412.08</td><td class="num">26372.94</td><td class="num">651.420</td></tr><tr><td>group-round sendrecv</td><td class="num">512MiB</td><td class="num">429.46</td><td class="num">27485.18</td><td class="num">1250.119</td></tr><tr><td>group-round sendrecv</td><td class="num">1024MiB</td><td class="num">354.25</td><td class="num">22672.01</td><td class="num">3031.027</td></tr><tr><td>stepbarrier 参考扫描</td><td class="num">16MiB</td><td class="num">376.20</td><td class="num">24077.07</td><td class="num">44.596</td></tr><tr><td>stepbarrier 参考扫描</td><td class="num">64MiB</td><td class="num">408.78</td><td class="num">26161.70</td><td class="num">164.170</td></tr><tr><td>stepbarrier 参考扫描</td><td class="num">128MiB</td><td class="num">420.65</td><td class="num">26921.51</td><td class="num">319.073</td></tr><tr><td>stepbarrier 参考扫描</td><td class="num">256MiB</td><td class="num">425.06</td><td class="num">27203.62</td><td class="num">631.529</td></tr><tr><td>stepbarrier 参考扫描</td><td class="num">512MiB</td><td class="num">429.11</td><td class="num">27463.07</td><td class="num">1251.125</td></tr><tr><td>stepbarrier 参考扫描</td><td class="num">1024MiB</td><td class="num">432.27</td><td class="num">27665.39</td><td class="num">2483.952</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li>group-round sendrecv 从 16MiB 到 128MiB 明显上升：309.34 -> 347.83 -> 418.85GB/s，小数据量下同步/启动开销占比更高。</li>
+      <li>128MiB 到 512MiB 基本进入平台：418.85、412.08、429.46GB/s，和 stepbarrier 参考扫描的 420.65、425.06、429.11GB/s 接近。</li>
+      <li>1024MiB group-round 按全局完成时间口径掉到 354.25GB/s，是异常长尾点；全局最慢 rank 是 51/28，完成时间约 3031us。</li>
+      <li>因此当前趋势判断应看 16-512MiB：固定平面 group-round sendrecv 随数据量增大上升并进入约 420-430GB/s 平台；1024MiB 需要单独排查长尾，不应解释为算法大包退化。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>数据量扫描参数</h2>
+    <ul>
+      <li>rank 数：64；group size：8；每组 8 rank，共 8 组。</li>
+      <li>扫描数据量：16、64、128、256、512、1024 MiB/rank。</li>
+      <li>baseline 16线程：RTP 包喷洒，16 个通信线程。</li>
+      <li>baseline 64线程：RTP 包喷洒，每个远端 peer 一个逻辑线程，实际 63 个远端 peer 线程。</li>
+      <li>MeshClos 固定平面：group-round sendrecv，同一 group-round 内双向 sendrecv 同步，不做整轮强 barrier。</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

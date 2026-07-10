@@ -37,6 +37,13 @@ class Task:
     unit_idx: int
 
 
+@dataclass
+class RenderStats:
+    tx_bytes: int
+    task_count: int
+    synthetic_self_bytes: int
+
+
 def pairwise_round_num(group_num: int) -> int:
     if group_num <= 1:
         return 0
@@ -99,6 +106,37 @@ def logical_unit(src: int, dst: int, rank_count: int, group_size: int, clos_chan
     return "clos", (src ^ dst) % clos_channels
 
 
+def hinted_logical_unit(
+    row: dict[str, str],
+    src: int,
+    dst: int,
+    group_size: int,
+    clos_channels: int,
+) -> tuple[str, int] | None:
+    src_port_hint = row.get("srcPortHint", "").strip()
+    if src_port_hint == "":
+        return None
+    try:
+        hint = int(src_port_hint)
+    except ValueError:
+        return None
+
+    if src // group_size == dst // group_size:
+        return "mesh", hint % group_size
+
+    first_clos_hint = group_size - 1
+    return "clos", (hint - first_clos_hint) % clos_channels
+
+
+def load_task_metadata(case_dir: Path) -> dict[int, dict[str, str]]:
+    traffic_path = case_dir / "traffic.csv"
+    if not traffic_path.exists():
+        return {}
+
+    with traffic_path.open(newline="") as f:
+        return {int(row["taskId"]): row for row in csv.DictReader(f)}
+
+
 def load_rank_tasks(
     case_dir: Path,
     rank: int,
@@ -114,9 +152,11 @@ def load_rank_tasks(
                 return row[name]
         raise KeyError(names[0])
 
+    task_metadata = load_task_metadata(case_dir)
     tasks: list[Task] = []
     with (case_dir / "output" / "task_statistics.csv").open(newline="") as f:
         for row in csv.DictReader(f):
+            row = {**task_metadata.get(int(row["taskId"]), {}), **row}
             if int(row["priority"]) not in priorities:
                 continue
             src = int(field(row, "sourceNodeId", "sourceNode"))
@@ -133,7 +173,14 @@ def load_rank_tasks(
             ):
                 unit_kind, unit_idx = "clos", priority - 3
             else:
-                unit_kind, unit_idx = logical_unit(src, dst, rank_count, group_size, clos_channels)
+                hinted = hinted_logical_unit(row, src, dst, group_size, clos_channels)
+                if hinted is not None:
+                    unit_kind, unit_idx = hinted
+                else:
+                    # Baseline traffic has no fixed-plane port hint. In that
+                    # case each task is its own peer thread; mapping it into
+                    # clos buckets would incorrectly merge independent peers.
+                    unit_kind, unit_idx = "peer", dst
             tasks.append(
                 Task(
                     task_id=int(row["taskId"]),
@@ -148,6 +195,18 @@ def load_rank_tasks(
                 )
             )
     return sorted(tasks, key=lambda t: (t.unit_kind, t.unit_idx, t.task_id))
+
+
+def infer_render_stats(tasks: list[Task], rank_count: int, include_self: bool) -> RenderStats:
+    tx_bytes = sum(task.size for task in tasks)
+    synthetic_self_bytes = 0
+    if include_self and tasks:
+        # AllToAll traffic omits the self-send task but bandwidth is normally
+        # reported per rank including that rank's own shard.
+        synthetic_self_bytes = max(task.size for task in tasks)
+        tx_bytes += synthetic_self_bytes
+    task_count = len(tasks) + (1 if synthetic_self_bytes else 0)
+    return RenderStats(tx_bytes=tx_bytes, task_count=task_count, synthetic_self_bytes=synthetic_self_bytes)
 
 
 def pack_sublanes(tasks: list[Task], overlap_epsilon_us: float) -> list[tuple[Task, int]]:
@@ -172,26 +231,27 @@ def render_html(
     case_dir: Path,
     tasks: list[Task],
     rank: int,
+    rank_count: int,
     group_size: int,
     clos_channels: int,
     title: str,
     sublane_epsilon_us: float,
     markers: list[tuple[float, str]],
+    include_self: bool,
 ) -> str:
     max_end = max((task.end_us for task in tasks), default=1.0)
-    total_bytes = sum(task.size for task in tasks)
-    direct_gbs = total_bytes / max_end / 1e3 if max_end else 0
+    stats = infer_render_stats(tasks, rank_count, include_self)
+    direct_gbs = stats.tx_bytes / max_end / 1e3 if max_end else 0
 
     lanes: dict[tuple[str, int], list[Task]] = defaultdict(list)
     for task in tasks:
         lanes[(task.unit_kind, task.unit_idx)].append(task)
 
     if any(kind == "peer" for kind, _ in lanes):
-        lane_order = sorted(lanes)
+        lane_order = [("peer", idx) for idx in range(rank_count)]
     else:
-        lane_order = [("mesh", idx) for idx in range(group_size - 1)]
+        lane_order = [("mesh", idx) for idx in range(group_size)]
         lane_order.extend(("clos", idx) for idx in range(clos_channels))
-    lane_order = [lane for lane in lane_order if lane in lanes]
 
     left = 172
     right = 28
@@ -347,7 +407,7 @@ def render_html(
   <div class="metrics">
     <div class="metric"><div class="k">Case</div><div class="v">{html.escape(case_dir.name)}</div></div>
     <div class="metric"><div class="k">Rank</div><div class="v">{rank}</div></div>
-    <div class="metric"><div class="k">Tasks</div><div class="v">{len(tasks)}</div></div>
+    <div class="metric"><div class="k">Tasks</div><div class="v">{stats.task_count}</div></div>
     <div class="metric"><div class="k">TX GB/s</div><div class="v">{direct_gbs:.2f}</div></div>
   </div>
   <div class="panel">
@@ -465,6 +525,11 @@ def main() -> int:
         help="Label used for --marker-us vertical markers.",
     )
     parser.add_argument("--title")
+    parser.add_argument(
+        "--exclude-self",
+        action="store_true",
+        help="Do not add the omitted self-send shard to TX bytes/task count.",
+    )
     args = parser.parse_args()
 
     case_dir = args.case_dir.resolve()
@@ -500,11 +565,13 @@ def main() -> int:
             case_dir,
             tasks,
             args.rank,
+            args.rank_count,
             args.group_size,
             clos_channels,
             title,
             args.sublane_epsilon_us,
             [(marker, args.marker_label) for marker in args.marker_us],
+            not args.exclude_self,
         )
     )
     print(f"wrote {args.output}")
