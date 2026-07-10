@@ -1,3 +1,0 @@
-nodeId,nodeType,portNum,forwardDelay
-0..1023,DEVICE,12,1ns
-1024..1215,SWITCH,124,1ns
